@@ -8,209 +8,236 @@
 package node
 
 import (
-	_ "embed"
-	"encoding/json"
-	"fmt"
-	"log"
+	"errors"
+	"math"
+	"net"
 	"os"
 	"path/filepath"
-	"sync"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/CESSProject/DeOSS/common/confile"
-	"github.com/CESSProject/DeOSS/common/db"
+	out "github.com/CESSProject/DeOSS/common/fout"
 	"github.com/CESSProject/DeOSS/common/logger"
-	"github.com/CESSProject/DeOSS/common/peerrecord"
-	"github.com/CESSProject/DeOSS/common/trackfile"
-	"github.com/CESSProject/DeOSS/configs"
+	"github.com/CESSProject/DeOSS/common/lru"
+	"github.com/CESSProject/DeOSS/common/record"
+	"github.com/CESSProject/DeOSS/common/tracker"
+	"github.com/CESSProject/DeOSS/common/utils"
+	"github.com/CESSProject/DeOSS/common/workspace"
 	"github.com/CESSProject/cess-go-sdk/chain"
-	"github.com/CESSProject/cess-go-tools/cacher"
-	"github.com/CESSProject/cess-go-tools/scheduler"
-	"github.com/CESSProject/p2p-go/core"
-	"github.com/CESSProject/p2p-go/out"
-	"github.com/gin-contrib/cors"
+	schain "github.com/CESSProject/cess-go-sdk/chain"
+	sutils "github.com/CESSProject/cess-go-sdk/utils"
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
-	"github.com/oschwald/geoip2-golang"
-	"github.com/pkg/errors"
+	"github.com/go-ping/ping"
 )
 
 type Node struct {
-	signkey     []byte
-	trackLock   *sync.RWMutex
-	geoip       *geoip2.Reader
-	trackDir    string
-	fadebackDir string
-	trackfile.TrackFile
-	confile.Confile
-	logger.Logger
-	db.Cache
-	peerrecord.PeerRecord
-	cacher.FileCache
-	scheduler.Selector
-	*chain.ChainClient
-	*core.PeerNode
+	*confile.Config
+	*lru.LRUCache
 	*gin.Engine
+	chain.Chainer
+	workspace.Workspace
+	logger.Logger
+	record.MinerRecorder
+	tracker.Tracker
 }
 
-//go:embed GeoLite2-City.mmdb
-var geoLite2 string
-
-// New is used to build a node instance
-func New() *Node {
-	return &Node{
-		trackLock:  new(sync.RWMutex),
-		PeerRecord: peerrecord.NewPeerRecord(),
-		TrackFile:  trackfile.NewTeeRecord(),
-	}
+func NewEmptyNode() *Node {
+	return &Node{}
 }
 
-func (n *Node) Run() {
-	geoip, err := geoip2.FromBytes([]byte(geoLite2))
+func NewNodeWithConfig(cfg *confile.Config) *Node {
+	return &Node{Config: cfg}
+}
+
+func (n *Node) InitChainclient(cli chain.Chainer) {
+	n.Chainer = cli
+}
+
+func (n *Node) InitWorkspace(ws string) {
+	n.Workspace = workspace.NewWorkspace(ws)
+}
+
+func (n *Node) InitLogger(lg logger.Logger) {
+	n.Logger = lg
+}
+
+func (n *Node) InitMinerRecord(r record.MinerRecorder) {
+	n.MinerRecorder = r
+}
+
+func (n *Node) InitTracker(t tracker.Tracker) {
+	n.Tracker = t
+}
+
+func (n *Node) InitServer(s *gin.Engine) {
+	n.Engine = s
+}
+
+func (n *Node) InitLRUCache(lru *lru.LRUCache) {
+	n.LRUCache = lru
+}
+
+func (n *Node) Start() {
+	var (
+		err                 error
+		ch_trackFile        = make(chan bool, 1)
+		ch_refreshMiner     = make(chan bool, 1)
+		ch_refreshBlacklist = make(chan bool, 1)
+	)
+
+	err = n.LoadMinerlist(filepath.Join(n.GetRootDir(), "miner_record"))
 	if err != nil {
-		log.Fatal(err)
+		os.Remove(filepath.Join(n.GetRootDir(), "miner_record"))
+		n.Log("err", "LoadMinerlist"+err.Error())
 	}
-	n.geoip = geoip
-	gin.SetMode(gin.ReleaseMode)
-	n.Engine = gin.Default()
-	config := cors.DefaultConfig()
-	config.AllowAllOrigins = true
-	config.AddAllowHeaders("*")
-	n.Engine.MaxMultipartMemory = MaxMemUsed
-	n.Engine.Use(cors.New(config))
-	n.Engine.GET("/version", n.Get_version)
-	n.Engine.GET("/bucket", n.Get_bucket)
-	n.Engine.GET(fmt.Sprintf("/metadata/:%s", HTTP_ParameterName_Fid), n.Get_metadata)
-	n.Engine.GET(fmt.Sprintf("/download/:%s", HTTP_ParameterName_Fid), n.Download_file)
-	n.Engine.GET(fmt.Sprintf("/canfiles/:%s", HTTP_ParameterName_Fid), n.GetCanFileHandle)
-	n.Engine.GET(fmt.Sprintf("/open/:%s", HTTP_ParameterName_Fid), n.Preview_file)
-
-	n.Engine.GET(fmt.Sprintf("/location/:%s", HTTP_ParameterName_Fid), n.Get_location)
-
-	n.Engine.PUT("/bucket", n.Put_bucket)
-	n.Engine.PUT("/file", n.Put_file)
-	n.Engine.PUT("/object", n.Put_object)
-	n.Engine.PUT("/chunks", n.PutChunksHandle)
-
-	n.Engine.DELETE(fmt.Sprintf("/file/:%s", HTTP_ParameterName), n.Delete_file)
-	n.Engine.DELETE(fmt.Sprintf("/bucket/:%s", HTTP_ParameterName), n.Delete_bucket)
-
-	n.Engine.GET("/404", n.NotFound)
-	out.Tip(fmt.Sprintf("Listening on port: %d", n.GetHttpPort()))
-
-	// tasks
-	go n.TaskMgt()
-
-	err = n.Engine.Run(fmt.Sprintf(":%d", n.GetHttpPort()))
+	err = n.LoadBlacklist(filepath.Join(n.GetRootDir(), "blacklist_record"))
 	if err != nil {
-		log.Fatalf("err: %v", err)
+		os.Remove(filepath.Join(n.GetRootDir(), "blacklist_record"))
+		n.Log("err", "LoadBlacklist"+err.Error())
+	}
+	err = n.LoadWhitelist(filepath.Join(n.GetRootDir(), "whitelist_record"))
+	if err != nil {
+		os.Remove(filepath.Join(n.GetRootDir(), "whitelist_record"))
+		n.Log("err", "LoadWhitelist"+err.Error())
+	}
+
+	ch_trackFile <- true
+
+	task_block := time.NewTicker(time.Duration(time.Second * 27))
+	defer task_block.Stop()
+
+	task_Minute := time.NewTicker(time.Duration(time.Second * 59))
+	defer task_Minute.Stop()
+
+	task_10Minute := time.NewTicker(time.Duration(time.Second * 597))
+	defer task_10Minute.Stop()
+
+	task_Hour := time.NewTicker(time.Duration(time.Second * 3599))
+	defer task_Hour.Stop()
+
+	go n.RefreshMiner(ch_refreshMiner)
+	go n.RefreshBlacklist(ch_refreshBlacklist)
+	go n.TrackerV2()
+
+	out.Ok("Service started successfully")
+
+	chainState := true
+	for {
+		select {
+		case <-task_block.C:
+			chainState = n.GetRpcState()
+			if !chainState {
+				err = n.ReconnectRpc()
+				if err != nil {
+					n.Log("err", schain.ERR_RPC_CONNECTION.Error())
+					out.Err(schain.ERR_RPC_CONNECTION.Error())
+				} else {
+					n.Log("info", "rpc reconnect suc: "+n.GetCurrentRpcAddr())
+				}
+			}
+
+		case <-task_Minute.C:
+			err := n.RefreshSelf()
+			if err != nil {
+				n.Log("err", err.Error())
+			}
+
+		case <-task_10Minute.C:
+			go n.BackupMinerlist(filepath.Join(n.GetRootDir(), "miner_record"))
+			go n.BackupBlacklist(filepath.Join(n.GetRootDir(), "blacklist_record"))
+			go n.BackupWhitelist(filepath.Join(n.GetRootDir(), "whitelist_record"))
+
+			if len(ch_refreshBlacklist) > 0 {
+				<-ch_refreshBlacklist
+				n.RefreshBlacklist(ch_refreshBlacklist)
+			}
+
+		case <-task_Hour.C:
+			if len(ch_refreshMiner) > 0 {
+				<-ch_refreshMiner
+				go n.RefreshMiner(ch_refreshMiner)
+			}
+		}
 	}
 }
 
-func (n *Node) InitFileCache(exp time.Duration, maxSpace int64, cacheDir string) {
-	n.FileCache = cacher.NewCacher(exp, maxSpace, cacheDir)
-}
-
-func (n *Node) InitNodeSelector(strategy string, nodeFilePath string, maxNodeNum int, maxTTL, flushInterval int64) error {
+func (n *Node) RefreshBlacklist(ch chan<- bool) {
+	defer func() { ch <- true }()
 	var err error
-	n.Selector, err = scheduler.NewNodeSelector(strategy, nodeFilePath, maxNodeNum, maxTTL, flushInterval)
+	var url string
+	blacklist := n.GetAllBlacklist()
+	for _, v := range blacklist {
+		url = strings.ReplaceAll(v.Addr, "\u0000", "")
+		url = strings.TrimSuffix(url, "/")
+		if strings.Contains(url, ":") {
+			url = strings.TrimPrefix(url, "http://")
+			_, err = net.DialTimeout("tcp", url, time.Second*5)
+			if err == nil {
+				n.RemoveFromBlacklist(v.Account)
+			}
+		} else {
+			_, err = ping.NewPinger(url)
+			if err == nil {
+				n.RemoveFromBlacklist(v.Account)
+			}
+		}
+	}
+}
+
+func (n *Node) RefreshMiner(ch chan<- bool) {
+	defer func() {
+		ch <- true
+		if err := recover(); err != nil {
+			n.Pnc(utils.RecoverError(err))
+		}
+	}()
+	sminerList, err := n.QueryAllMiner(-1)
+	if err == nil {
+		for i := 0; i < len(sminerList); i++ {
+			acc, err := sutils.EncodePublicKeyAsCessAccount(sminerList[i][:])
+			if err != nil {
+				n.Log("err", err.Error())
+				continue
+			}
+			minerinfo, err := n.QueryMinerItems(sminerList[i][:], -1)
+			if err != nil {
+				if !errors.Is(err, schain.ERR_RPC_EMPTY_VALUE) {
+					n.Log("err", err.Error())
+				} else {
+					n.DeleteMinerinfo(acc)
+				}
+				continue
+			}
+			n.SaveMinerinfo(acc, string(minerinfo.Endpoint[:]), string(minerinfo.State), minerinfo.IdleSpace.Uint64())
+		}
+	}
+}
+
+func (n *Node) RefreshSelf() error {
+	defer func() {
+		if err := recover(); err != nil {
+			n.Pnc(utils.RecoverError(err))
+		}
+	}()
+	accInfo, err := n.QueryAccountInfoByAccountID(n.GetSignatureAccPulickey(), -1)
 	if err != nil {
 		return err
 	}
-	//refresh the user-configured storage node list
-	n.Selector.FlushlistedPeerNodes(scheduler.DEFAULT_TIMEOUT, n.GetDHTable())
+
+	free := accInfo.Data.Free.String()
+	if len(free) <= len(schain.TokenPrecision_CESS) {
+		n.SetBalances(0)
+		return nil
+	}
+
+	free = free[:len(free)-len(schain.TokenPrecision_CESS)]
+	free_uint, err := strconv.ParseUint(free, 10, 64)
+	if err != nil {
+		n.SetBalances(math.MaxUint64)
+		return nil
+	}
+	n.SetBalances(free_uint)
 	return nil
-}
-
-func (n *Node) SetSignkey(signkey []byte) {
-	n.signkey = signkey
-}
-
-func (n *Node) SetTrackDir(dir string) {
-	n.trackDir = dir
-}
-
-func (n *Node) SetFadebackDir(dir string) {
-	n.fadebackDir = dir
-}
-
-func (n *Node) WriteTrackFile(fid string, data []byte) error {
-	if len(fid) != chain.FileHashLen {
-		return errors.New("invalid fid")
-	}
-	var err error
-	fpath := filepath.Join(n.trackDir, uuid.New().String())
-	for {
-		_, err = os.Stat(fpath)
-		if err != nil {
-			break
-		}
-		time.Sleep(time.Millisecond)
-		fpath = filepath.Join(n.trackDir, uuid.New().String())
-	}
-	f, err := os.Create(fpath)
-	if err != nil {
-		return errors.Wrap(err, "[os.Create]")
-	}
-	defer os.Remove(fpath)
-
-	_, err = f.Write(data)
-	if err != nil {
-		f.Close()
-		return errors.Wrap(err, "[Write]")
-	}
-	err = f.Sync()
-	if err != nil {
-		f.Close()
-		return errors.Wrap(err, "[Sync]")
-	}
-	f.Close()
-	err = os.Rename(fpath, filepath.Join(n.trackDir, fid))
-	return err
-}
-
-func (n *Node) ParseTrackFile(filehash string) (RecordInfo, error) {
-	var result RecordInfo
-	n.trackLock.RLock()
-	defer n.trackLock.RUnlock()
-	b, err := os.ReadFile(filepath.Join(n.trackDir, filehash))
-	if err != nil {
-		return result, err
-	}
-	err = json.Unmarshal(b, &result)
-	return result, err
-}
-
-func (n *Node) HasTrackFile(filehash string) bool {
-	n.trackLock.RLock()
-	defer n.trackLock.RUnlock()
-	_, err := os.Stat(filepath.Join(n.trackDir, filehash))
-	return err == nil
-}
-
-func (n *Node) ListTrackFiles() ([]string, error) {
-	n.trackLock.RLock()
-	result, err := filepath.Glob(filepath.Join(n.trackDir, "*"))
-	if err != nil {
-		n.trackLock.RUnlock()
-		return nil, err
-	}
-	n.trackLock.RUnlock()
-	return result, nil
-}
-
-func (n *Node) DeleteTrackFile(filehash string) {
-	n.trackLock.Lock()
-	defer n.trackLock.Unlock()
-	os.Remove(filepath.Join(n.trackDir, filehash))
-}
-
-func (n *Node) RebuildDirs() {
-	os.RemoveAll(n.GetDirs().TmpDir)
-	os.RemoveAll(filepath.Join(n.Workspace(), configs.Db))
-	os.RemoveAll(filepath.Join(n.Workspace(), configs.Log))
-	os.RemoveAll(filepath.Join(n.Workspace(), configs.Track))
-	os.MkdirAll(n.GetDirs().FileDir, 0755)
-	os.MkdirAll(n.GetDirs().TmpDir, 0755)
-	os.MkdirAll(filepath.Join(n.Workspace(), configs.Track), 0755)
 }

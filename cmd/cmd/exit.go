@@ -11,6 +11,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"time"
 
 	"github.com/CESSProject/DeOSS/configs"
 	"github.com/CESSProject/DeOSS/node"
@@ -18,32 +19,32 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// cmd_exit_func is an implementation of the exit command,
+// exitCmd is an implementation of the exit command,
 // which is used to unregister the deoss role.
-func cmd_exit_func(cmd *cobra.Command, args []string) {
+func exitCmd(cmd *cobra.Command, args []string) {
 	var (
 		err error
-		n   = node.New()
+		n   = node.NewEmptyNode()
 	)
 
-	n.Confile, err = buildAuthenticationConfig(cmd)
+	n.Config, err = buildConfigFileNotCheck(cmd)
 	if err != nil {
 		log.Println(err)
 		os.Exit(1)
 	}
 
-	n.ChainClient, err = cess.New(
+	n.Chainer, err = cess.New(
 		context.Background(),
 		cess.Name(configs.Name),
-		cess.ConnectRpcAddrs(n.Confile.GetRpcAddr()),
-		cess.Mnemonic(n.Confile.GetMnemonic()),
-		cess.TransactionTimeout(configs.TimeOut_WaitBlock),
+		cess.ConnectRpcAddrs(n.Config.Chain.Rpc),
+		cess.Mnemonic(n.Config.Chain.Mnemonic),
+		cess.TransactionTimeout(time.Second*time.Duration(n.Config.Chain.Timeout)),
 	)
 	if err != nil {
 		log.Println(err)
 		os.Exit(1)
 	}
-	defer n.ChainClient.Close()
+	defer n.Chainer.Close()
 
 	err = n.InitExtrinsicsNameForOSS()
 	if err != nil {

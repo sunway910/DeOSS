@@ -1,51 +1,43 @@
-# The rpc endpoint of the chain node
-Rpc:
-  # test network
-  - "wss://testnet-rpc.cess.network/ws/"
-# Bootstrap Nodes
-Boot:
-  # test network
-  - "_dnsaddr.boot-miner-testnet.cess.network"
-# Account mnemonic
-# Substrate well-known mnemonic:
-#   - https://github.com/substrate-developer-hub/substrate-developer-hub.github.io/issues/613
-Mnemonic: "bottom drive obey lake curtain smoke basket hold race lonely fit walk"
-# Service workspace
-Workspace: "/"
-# P2P communication port
-P2P_Port: 4001
-# Service listening port
-HTTP_Port: 8080
-# Access mode: public / private
-# In public mode, only users in Accounts can't access it. 
-# In private mode, only users in Accounts can access it.
-Access: public
-# Account black/white list
-Accounts:
-# If you want to expose your oss service, please configure its domain name
-Domain: ""
+application:
+  # gateway's workspace
+  workspace: /
+  # gateway run mode  [debug | release]
+  mode: release
+  # service visibility: [public | private]
+  # public: gateway address will be published on the chain
+  # private: gateway address will not be made public on the chain
+  visibility: public
+  # domain name, if it's empty and the visibility is public, the <ip:port> will be published on the chain
+  domainname: 
+  # maximum space used, gateway will automatically clean up the cached files, default 1TiB
+  maxusespace: 1099511627776
+  # gateway API communication port, default is 8080
+  port: 8080
 
-# User Files Cacher config
-# File cache size, default 512G, (unit is byte)
-CacheSize:
-# File cache expiration time, default 3 hour (unit is minutes)
-Expiration:
-# Directory to store file cache, default path: Workspace/filecache/
-CacheDir:
+chain:
+  # signature account mnemonic
+  # substrate well-known mnemonic:
+  #   - https://github.com/substrate-developer-hub/substrate-developer-hub.github.io/issues/613
+  mnemonic: "bottom drive obey lake curtain smoke basket hold race lonely fit walk"
+  # waiting for transaction timeout, default is 15 seconds
+  timeout: 15
+  # rpc endpoint list
+  rpc:
+    # test network
+    - "wss://testnet-rpc.cess.network/ws/"
 
-# Storage Node Selector config
-# Used to find better storage node partners for DeOSS to upload or download files
-# Two strategies for using your specified storage nodes, "priority" or "fixed", default is "priority"
-SelectStrategy: 
-# JSON file used to specify the storage node. If it does not exist, it will be automatically created.
-# You can configure which storage nodes to use or not use in this file.
-NodeFilePath:
-# Maximum number of storage nodes allowed for long-term cooperation, default 120
-MaxNodeNum:
-# Maximum tolerable TTL for communication with storage nodes, default 500 ms (unit is milliseconds)
-MaxTTL:
-# Available storage node list refresh time, default 4 hours (unit is hours)
-RefreshTime:
+user:
+  # high priority accounts will not be restricted or blacklisted when accessing the gateway
+  account:
 
-# Priority miners for use 
-Miners:
+access:
+  # access mode: [public | private]
+  # public: only users in account can't access the gateway
+  # private: only users in account can access the gateway
+  mode: public
+  # account black/white list
+  account:
+
+shunt:
+  # specify the storage miner account you want to store
+  account:

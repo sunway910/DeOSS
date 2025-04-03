@@ -9,6 +9,7 @@ package confile
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path"
 	"time"
@@ -21,121 +22,97 @@ import (
 )
 
 const (
-	ProfileDefault  = "conf.yaml"
-	ProfileTemplete = `# The rpc endpoint of the chain node
-Rpc:
-  # test network
-  - "wss://testnet-rpc.cess.network/ws/"
-# Bootstrap Nodes
-Boot:
-  # test network
-  - "_dnsaddr.boot-miner-testnet.cess.network"
-# Account mnemonic
-Mnemonic: ""
-# Service workspace
-Workspace: "/"
-# P2P communication port
-P2P_Port: 4001
-# Service listening port
-HTTP_Port: 8080
-# Access mode: public / private
-# In public mode, only users in Accounts can't access it. 
-# In private mode, only users in Accounts can access it.
-Access: public
-# Account black/white list
-Accounts:
-# If you want to expose your oss service, please configure its domain name
-Domain: ""
+	DefaultConfig  = "conf.yaml"
+	ConfigTemplete = `application:
+  # gateway's workspace
+  workspace: /
+  # gateway run mode  [debug | release]
+  mode: release
+  # service visibility: [public | private]
+  # public: gateway address will be published on the chain
+  # private: gateway address will not be made public on the chain
+  visibility: public
+  # domain name, if it's empty and the visibility is public, the <ip:port> will be published on the chain
+  domainname: 
+  # maximum space occupied, gateway will automatically clean up the cached files
+  maxusespace: 1099511627776
+  # gateway API communication port, default is 8080
+  port: 8080
 
-# User Files Cacher config
-# File cache size, default 512G, (unit is byte)
-CacheSize:
-# File cache expiration time, default 3 hour (unit is minutes)
-Expiration:
-# Directory to store file cache, default path: Workspace/filecache/
-CacheDir:
+chain:
+  # signature account mnemonic
+  mnemonic: ""
+  # waiting for transaction timeout, default is 15 seconds
+  timeout: 15
+  # rpc endpoint list
+  rpc:
+    # test network
+    - "wss://testnet-rpc.cess.network/ws/"
 
-# Storage Node Selector config
-# Used to find better storage node partners for DeOSS to upload or download files
-# Two strategies for using your specified storage nodes, "priority" or "fixed", default is "priority"
-SelectStrategy: 
-# JSON file used to specify the storage node. If it does not exist, it will be automatically created.
-# You can configure which storage nodes to use or not use in this file.
-NodeFilePath:
-# Maximum number of storage nodes allowed for long-term cooperation, default 120
-MaxNodeNum:
-# Maximum tolerable TTL for communication with storage nodes, default 500 ms (unit is milliseconds)
-MaxTTL:
-# Available storage node list refresh time, default 4 hours (unit is hours)
-RefreshTime:
+user:
+  # high priority accounts will not be restricted or blacklisted when accessing the gateway
+  account:
 
-# Priority miners for use 
-Miners:
-`
+access:
+  # access mode: [public | private]
+  # public: only users in account can't access the gateway
+  # private: only users in account can access the gateway
+  mode: public
+  # account black/white list
+  account:
+
+shunt:
+  # specify the storage miner account you want to store
+  account:`
 )
 
-type Confile interface {
-	Parse(fpath string) error
-	GetRpcAddr() []string
-	GetBootNodes() []string
-	GetHttpPort() int
-	GetP2pPort() int
-	GetWorkspace() string
-	GetMnemonic() string
-	GetPublickey() ([]byte, error)
-	GetAccount() string
-	GetAccess() string
-	GetAccounts() []string
-	GetDomainName() string
-	GetCacheSize() int64
-	GetCacheItemExp() int64
-	GetCacheDir() string
-	GetSelectStrategy() string
-	GetNodeFilePath() string
-	GetMaxNodeNum() int
-	GetMaxTTL() int64
-	GetRefreshTime() int64
-	GetPriorityMiners() []string
+type Application struct {
+	Workspace   string `name:"workspace" toml:"workspace" yaml:"workspace"`
+	Mode        string `name:"mode" toml:"mode" yaml:"mode"`
+	Visibility  string `name:"visibility" toml:"visibility" yaml:"visibility"`
+	Domainname  string `name:"domainname" toml:"domainname" yaml:"domainname"`
+	Maxusespace uint64 `name:"maxusespace" toml:"maxusespace" yaml:"maxusespace"`
+	Port        uint32 `name:"port" toml:"port" yaml:"port"`
 }
 
-type confile struct {
-	Rpc            []string `name:"Rpc" toml:"Rpc" yaml:"Rpc"`
-	Boot           []string `name:"Boot" toml:"Boot" yaml:"Boot"`
-	Mnemonic       string   `name:"Mnemonic" toml:"Mnemonic" yaml:"Mnemonic"`
-	Workspace      string   `name:"Workspace" toml:"Workspace" yaml:"Workspace"`
-	P2P_Port       int      `name:"P2P_Port" toml:"P2P_Port" yaml:"P2P_Port"`
-	HTTP_Port      int      `name:"HTTP_Port" toml:"HTTP_Port" yaml:"HTTP_Port"`
-	Access         string   `name:"Access" toml:"Access" yaml:"Access"`
-	Accounts       []string `name:"Accounts" toml:"Accounts" yaml:"Accounts"`
-	Domain         string   `name:"Domain" toml:"Domain" yaml:"Domain"`
-	CacheSize      int64    `name:"CacheSize" toml:"CacheSize" yaml:"CacheSize"`
-	Expiration     int64    `name:"Expiration" toml:"Expiration" yaml:"Expiration"`
-	CacheDir       string   `name:"CacheDir" toml:"CacheDir" yaml:"CacheDir"`
-	SelectStrategy string   `name:"SelectStrategy" toml:"SelectStrategy" yaml:"SelectStrategy"`
-	NodeFilePath   string   `name:"NodeFilePath" toml:"NodeFilePath" yaml:"NodeFilePath"`
-	MaxNodeNum     int      `name:"MaxNodeNum" toml:"MaxNodeNum" yaml:"MaxNodeNum"`
-	MaxTTL         int64    `name:"MaxTTL" toml:"MaxTTL" yaml:"MaxTTL"`
-	RefreshTime    int64    `name:"RefreshTime" toml:"RefreshTime" yaml:"RefreshTime"`
-	Miners         []string `name:"Miners" toml:"Miners" yaml:"Miners"`
+type Chain struct {
+	Mnemonic string   `name:"mnemonic" toml:"mnemonic" yaml:"mnemonic"`
+	Timeout  int      `name:"timeout" toml:"timeout" yaml:"timeout"`
+	Rpc      []string `name:"rpc" toml:"rpc" yaml:"rpc"`
 }
 
-var _ Confile = (*confile)(nil)
-
-func NewConfigfile() *confile {
-	return &confile{}
+type User struct {
+	Account []string `name:"account" toml:"account" yaml:"account"`
 }
 
-func (c *confile) Parse(fpath string) error {
-	var confilePath = fpath
+type Access struct {
+	Mode    string   `name:"mode" toml:"mode" yaml:"mode"`
+	Account []string `name:"account" toml:"account" yaml:"account"`
+}
+
+type Shunt struct {
+	Account []string `name:"account" toml:"account" yaml:"account"`
+}
+
+type Config struct {
+	Application `yaml:"application"`
+	Chain       `yaml:"chain"`
+	User        `yaml:"user"`
+	Access      `yaml:"access"`
+	Shunt       `yaml:"shunt"`
+}
+
+func NewConfig(config_file string) (*Config, error) {
+	var confilePath = config_file
 	if confilePath == "" {
-		confilePath = ProfileDefault
+		confilePath = DefaultConfig
 	}
 	fstat, err := os.Stat(confilePath)
 	if err != nil {
-		return errors.Errorf("Parse: %v", err)
+		return nil, err
 	}
 	if fstat.IsDir() {
-		return errors.Errorf("The '%v' is not a file", confilePath)
+		return nil, errors.Errorf("the '%v' is not a file", confilePath)
 	}
 
 	viper.SetConfigFile(confilePath)
@@ -143,209 +120,118 @@ func (c *confile) Parse(fpath string) error {
 
 	err = viper.ReadInConfig()
 	if err != nil {
-		return errors.Errorf("ReadInConfig: %v", err)
+		return nil, errors.Errorf("ReadInConfig: %v", err)
 	}
+	var c = &Config{}
 	err = viper.Unmarshal(c)
 	if err != nil {
-		return errors.Errorf("Configuration file format error: %v", err)
+		return nil, errors.Errorf("configuration file format error: %v", err)
+	}
+
+	if c.Mnemonic == "" {
+		c.Mnemonic = os.Getenv("mnemonic")
 	}
 
 	_, err = signature.KeyringPairFromSecret(c.Mnemonic, 0)
 	if err != nil {
-		return errors.Errorf("Invalid mnemonic: %v", err)
+		return nil, errors.Errorf("invalid mnemonic: %v", err)
 	}
 
-	if len(c.Rpc) == 0 ||
-		len(c.Boot) == 0 {
-		return errors.New("The configuration file cannot have empty entries")
+	if len(c.Rpc) == 0 {
+		return nil, errors.New("empty rpc list")
 	}
 
-	if c.HTTP_Port < 1024 || c.P2P_Port < 1024 {
-		return errors.Errorf("Prohibit the use of system reserved port")
-	}
-	if c.HTTP_Port > 65535 || c.P2P_Port > 65535 {
-		return errors.New("The port number cannot exceed 65535")
+	if c.Application.Port > 65535 {
+		return nil, errors.New("the port number cannot exceed 65535")
 	}
 
-	if c.Access != configs.Access_Public && c.Access != configs.Access_Private {
-		return errors.New("Invalid Access")
+	if !FreeLocalPort(c.Application.Port) {
+		return nil, errors.Errorf("the port %d is in use", c.Application.Port)
 	}
 
-	var accounts = make(map[string]struct{}, 0)
-	for _, v := range c.Accounts {
-		err = sutils.VerityAddress(v, sutils.CessPrefix)
+	if c.Application.Mode != configs.App_Mode_Release && c.Application.Mode != configs.App_Mode_Debug {
+		return nil, errors.New("invalid application mode")
+	}
+
+	if c.Application.Visibility != configs.Access_Public && c.Application.Visibility != configs.Access_Private {
+		return nil, errors.New("invalid visibility")
+	}
+
+	if c.Access.Mode != configs.Access_Public && c.Access.Mode != configs.Access_Private {
+		return nil, errors.New("invalid access mode")
+	}
+
+	for i := 0; i < len(c.Shunt.Account); i++ {
+		_, err = sutils.ParsingPublickey(c.Shunt.Account[i])
 		if err != nil {
-			continue
-		}
-		accounts[v] = struct{}{}
-	}
-	var accountList = make([]string, 0)
-	for k := range accounts {
-		accountList = append(accountList, k)
-	}
-	c.Accounts = accountList
-
-	// err = sutils.CheckDomain(c.Domain)
-	// if err != nil {
-	// 	return errors.New("Invalid domain name")
-	// }
-
-	fstat, err = os.Stat(c.Workspace)
-	if err != nil {
-		return os.MkdirAll(c.Workspace, 0755)
-	}
-
-	if !fstat.IsDir() {
-		return errors.Errorf("The '%v' is not a directory", c.Workspace)
-	}
-
-	return nil
-}
-
-func (c *confile) SetRpcAddr(rpc []string) {
-	c.Rpc = rpc
-}
-
-func (c *confile) SetBootNodes(boot []string) {
-	c.Boot = boot
-}
-
-func (c *confile) SetHttpPort(port int) error {
-	if port < 1024 {
-		return errors.Errorf("Prohibit the use of system reserved port: %v", port)
-	}
-	if port > 65535 {
-		return errors.New("The port number cannot exceed 65535")
-	}
-	c.HTTP_Port = port
-	return nil
-}
-
-func (c *confile) SetP2pPort(port int) error {
-	if port < 1024 {
-		return errors.Errorf("Prohibit the use of system reserved port: %v", port)
-	}
-	if port > 65535 {
-		return errors.New("The port number cannot exceed 65535")
-	}
-	c.P2P_Port = port
-	return nil
-}
-
-func (c *confile) SetWorkspace(workspace string) error {
-	fstat, err := os.Stat(workspace)
-	if err != nil {
-		err = os.MkdirAll(workspace, 0755)
-		if err != nil {
-			return err
+			return nil, errors.New("invalid shunt account")
 		}
 	}
-	if !fstat.IsDir() {
-		return fmt.Errorf("%s is not a directory", workspace)
-	}
-	c.Workspace = workspace
-	return nil
-}
 
-func (c *confile) SetMnemonic(mnemonic string) error {
-	_, err := signature.KeyringPairFromSecret(mnemonic, 0)
+	err = os.MkdirAll(c.Workspace, 0755)
 	if err != nil {
-		return err
+		return nil, errors.Errorf("create workspace: %v", err)
 	}
-	c.Mnemonic = mnemonic
-	return nil
+
+	return c, nil
 }
 
-func (c *confile) GetRpcAddr() []string {
-	return c.Rpc
-}
-
-func (c *confile) GetHttpPort() int {
-	return c.HTTP_Port
-}
-
-func (c *confile) GetP2pPort() int {
-	return c.P2P_Port
-}
-
-func (c *confile) GetWorkspace() string {
-	return c.Workspace
-}
-
-func (c *confile) GetMnemonic() string {
-	return c.Mnemonic
-}
-
-func (c *confile) GetBootNodes() []string {
-	return c.Boot
-}
-
-func (c *confile) GetPublickey() ([]byte, error) {
-	key, err := signature.KeyringPairFromSecret(c.GetMnemonic(), 0)
+func NewConfigNotCheck(config_file string) (*Config, error) {
+	var confilePath = config_file
+	if confilePath == "" {
+		confilePath = DefaultConfig
+	}
+	fstat, err := os.Stat(confilePath)
 	if err != nil {
 		return nil, err
 	}
-	return key.PublicKey, nil
-}
-
-func (c *confile) GetAccount() string {
-	key, _ := signature.KeyringPairFromSecret(c.GetMnemonic(), 0)
-	acc, _ := sutils.EncodePublicKeyAsCessAccount(key.PublicKey)
-	return acc
-}
-
-func (c *confile) GetDomainName() string {
-	return c.Domain
-}
-
-func (c *confile) GetAccess() string {
-	return c.Access
-}
-
-func (c *confile) GetAccounts() []string {
-	return c.Accounts
-}
-
-func (c *confile) GetCacheSize() int64 {
-	if c.CacheSize <= 128*1024*1024*1024 {
-		c.CacheSize = 128 * 1024 * 1024 * 1024
+	if fstat.IsDir() {
+		return nil, errors.Errorf("the '%v' is not a file", confilePath)
 	}
-	return c.CacheSize
-}
-func (c *confile) GetCacheItemExp() int64 {
-	if c.Expiration <= 0 || c.Expiration > 7*24*60 {
-		c.Expiration = 3 * 60
+
+	viper.SetConfigFile(confilePath)
+	viper.SetConfigType(path.Ext(confilePath)[1:])
+
+	err = viper.ReadInConfig()
+	if err != nil {
+		return nil, errors.Errorf("ReadInConfig: %v", err)
 	}
-	return c.Expiration * int64(time.Minute)
-}
-func (c *confile) GetCacheDir() string {
-	return c.CacheDir
-}
-func (c *confile) GetSelectStrategy() string {
-	return c.SelectStrategy
-}
-func (c *confile) GetNodeFilePath() string {
-	return c.NodeFilePath
-}
-func (c *confile) GetMaxNodeNum() int {
-	if c.MaxNodeNum <= 0 || c.MaxNodeNum > 10000 {
-		c.MaxNodeNum = 120
+	var c = &Config{}
+	err = viper.Unmarshal(c)
+	if err != nil {
+		return nil, errors.Errorf("configuration file format error: %v", err)
 	}
-	return c.MaxNodeNum
-}
-func (c *confile) GetMaxTTL() int64 {
-	if c.MaxTTL <= 0 || c.MaxTTL >= 5000 {
-		c.MaxTTL = 500
+
+	if c.Mnemonic == "" {
+		c.Mnemonic = os.Getenv("mnemonic")
 	}
-	return c.MaxTTL
-}
-func (c *confile) GetRefreshTime() int64 {
-	if c.RefreshTime <= 0 || c.RefreshTime > 24 {
-		c.RefreshTime = 4
+
+	_, err = signature.KeyringPairFromSecret(c.Mnemonic, 0)
+	if err != nil {
+		return nil, errors.Errorf("invalid mnemonic: %v", err)
 	}
-	return c.RefreshTime
+
+	if len(c.Rpc) == 0 {
+		return nil, errors.New("empty rpc list")
+	}
+	return c, nil
 }
 
-func (c *confile) GetPriorityMiners() []string {
-	return c.Miners
+func (c *Config) IsHighPriorityAccount(acc string) bool {
+	length := len(c.User.Account)
+	for i := 0; i < length; i++ {
+		if acc == c.User.Account[i] {
+			return true
+		}
+	}
+	return false
+}
+
+func FreeLocalPort(port uint32) bool {
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second*3)
+	if err != nil {
+		return true
+	}
+	conn.Close()
+	return false
 }
